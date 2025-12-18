@@ -232,12 +232,18 @@ export default function App() {
         if (cls.startDate) {
           const sdParts = cls.startDate.split('/').map(Number);
           const sd = new Date(sdParts[2], sdParts[1] - 1, sdParts[0]);
-          if (date < sd) return false;
+          // Compare only year/month/day, ignoring time
+          const sdDayOnly = new Date(sd.getFullYear(), sd.getMonth(), sd.getDate());
+          const dateDayOnly = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+          if (dateDayOnly < sdDayOnly) return false;
         }
         if (cls.endDate) {
           const edParts = cls.endDate.split('/').map(Number);
           const ed = new Date(edParts[2], edParts[1] - 1, edParts[0]);
-          if (date > ed) return false;
+          // Compare only year/month/day, ignoring time
+          const edDayOnly = new Date(ed.getFullYear(), ed.getMonth(), ed.getDate());
+          const dateDayOnly = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+          if (dateDayOnly > edDayOnly) return false;
         }
       } catch (e) {
         // on parse error, fall back to showing the class
@@ -283,6 +289,34 @@ export default function App() {
       Alert.alert('Thông báo', 'Ngày kết thúc không hợp lệ. Hãy nhập theo DD/MM/YYYY');
       return;
     }
+
+    // Validate startDate/endDate belong to one of the selected weekdays
+    const selectedDaysForValidation = (formData.days as string[]) || [DAYS[selectedDayIndex]];
+    if (formData.startDate && selectedDaysForValidation.length > 0) {
+      const sdObj = parseDateFromDDMMYYYY(formData.startDate as string);
+      if (sdObj) {
+        const dayOfWeek = sdObj.getDay();
+        const startDateDayOfWeekStr = DAYS[(dayOfWeek === 0 ? 6 : dayOfWeek - 1)]; // Convert JS dayOfWeek (0=Sun) to DAYS index
+        if (!selectedDaysForValidation.includes(startDateDayOfWeekStr)) {
+          const viDays = selectedDaysForValidation.map(d => DAYS_VI[DAYS.indexOf(d)]).join(', ');
+          Alert.alert('Thông báo', `Ngày bắt đầu phải thuộc một trong các thứ đã chọn: ${viDays}`);
+          return;
+        }
+      }
+    }
+    if (formData.endDate && selectedDaysForValidation.length > 0) {
+      const edObj = parseDateFromDDMMYYYY(formData.endDate as string);
+      if (edObj) {
+        const dayOfWeek = edObj.getDay();
+        const endDateDayOfWeekStr = DAYS[(dayOfWeek === 0 ? 6 : dayOfWeek - 1)]; // Convert JS dayOfWeek (0=Sun) to DAYS index
+        if (!selectedDaysForValidation.includes(endDateDayOfWeekStr)) {
+          const viDays = selectedDaysForValidation.map(d => DAYS_VI[DAYS.indexOf(d)]).join(', ');
+          Alert.alert('Thông báo', `Ngày kết thúc phải thuộc một trong các thứ đã chọn: ${viDays}`);
+          return;
+        }
+      }
+    }
+
     if (formData.startDate && formData.endDate) {
       const sd = parseDateFromDDMMYYYY(formData.startDate as string);
       const ed = parseDateFromDDMMYYYY(formData.endDate as string);
@@ -302,6 +336,61 @@ export default function App() {
     }
     if (formData.endDate && isValidDateDDMMYYYY(formData.endDate as string)) {
       formData.endDate = normalizeDateDDMMYYYY(formData.endDate as string);
+    }
+
+    // Determine selected days to use for this save (create or edit)
+    const selectedDaysForSave: string[] = (formData.days as string[]) || (editingClass
+      ? ((editingClass as any).days && Array.isArray((editingClass as any).days)
+          ? (editingClass as any).days
+          : [(editingClass as any).day])
+      : [DAYS[selectedDayIndex]]);
+
+    if (!selectedDaysForSave || selectedDaysForSave.length === 0) {
+      Alert.alert('Thông báo', 'Vui lòng chọn ít nhất một thứ trong tuần cho môn học');
+      return;
+    }
+
+    // Ensure formData.days contains the days we'll persist
+    formData.days = selectedDaysForSave as any;
+
+    // Check for time conflicts with existing classes on the same weekdays
+    const timeToMinutes = (t: string) => {
+      const parts = (t || '00:00').split(':').map(Number);
+      return (parts[0] || 0) * 60 + (parts[1] || 0);
+    };
+    const timesOverlap = (s1: string, e1: string, s2: string, e2: string) => {
+      const a = timeToMinutes(s1);
+      const b = timeToMinutes(e1);
+      const c = timeToMinutes(s2);
+      const d = timeToMinutes(e2);
+      return a < d && c < b;
+    };
+
+    const newStartDate = formData.startDate ? parseDateFromDDMMYYYY(formData.startDate as string) : null;
+    const newEndDate = formData.endDate ? parseDateFromDDMMYYYY(formData.endDate as string) : null;
+
+    for (const dayOfWeek of selectedDaysForSave) {
+      const classesOnDay = scheduleData[dayOfWeek] || [];
+      for (const existing of classesOnDay) {
+        // skip self when editing
+        if (editingClass && existing.id === (editingClass as any).id) continue;
+
+        const existStart = existing.startDate ? parseDateFromDDMMYYYY(existing.startDate as string) : null;
+        const existEnd = existing.endDate ? parseDateFromDDMMYYYY(existing.endDate as string) : null;
+
+        // If both have date ranges and they don't overlap, no conflict for that existing class
+        if (newStartDate && newEndDate && existStart && existEnd) {
+          if (newEndDate < existStart || existEnd < newStartDate) {
+            continue;
+          }
+        }
+
+        // Otherwise treat as potential overlap (unbounded ranges possibly overlap)
+        if (timesOverlap(formData.startTime as string, formData.endTime as string, existing.startTime, existing.endTime)) {
+          Alert.alert('Thông báo', 'Thời gian đã bị chiếm dụng');
+          return;
+        }
+      }
     }
 
     const day = editingClass ? editingClass.day : DAYS[selectedDayIndex];
@@ -352,6 +441,14 @@ export default function App() {
   const handleSaveNote = async () => {
     if (!noteFormData.title) {
       Alert.alert('Thông báo', 'Vui lòng nhập tiêu đề ghi chú');
+      return;
+    }
+
+    // Validate: must have either a specific date OR selected weekdays
+    const hasDate = !!(noteFormData.date && noteFormData.date.trim());
+    const hasDays = !!(noteFormData.days && noteFormData.days.length > 0);
+    if (!hasDate && !hasDays) {
+      Alert.alert('Thông báo', 'Vui lòng chọn ngày cụ thể hoặc chọn ít nhất một thứ trong tuần');
       return;
     }
 
@@ -479,13 +576,36 @@ const exportScheduleToExcel = async () => {
     DAYS.forEach((day, index) => {
       worksheetData.push([DAYS_VI[index], formatDateVN(weekDates[index])]);
 
-      // Classes
+      // Classes - filter by date range if startDate/endDate are set
       worksheetData.push(['Môn học', 'Giáo viên', 'Phòng', 'Thời gian', 'Ghi chú']);
       const classes = scheduleData[day] || [];
-      if (classes.length === 0) {
+      const dayDate = weekDates[index];
+      const filteredClasses = classes.filter(cls => {
+        try {
+          if (cls.startDate) {
+            const sdParts = cls.startDate.split('/').map(Number);
+            const sd = new Date(sdParts[2], sdParts[1] - 1, sdParts[0]);
+            const sdDayOnly = new Date(sd.getFullYear(), sd.getMonth(), sd.getDate());
+            const dateDayOnly = new Date(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate());
+            if (dateDayOnly < sdDayOnly) return false;
+          }
+          if (cls.endDate) {
+            const edParts = cls.endDate.split('/').map(Number);
+            const ed = new Date(edParts[2], edParts[1] - 1, edParts[0]);
+            const edDayOnly = new Date(ed.getFullYear(), ed.getMonth(), ed.getDate());
+            const dateDayOnly = new Date(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate());
+            if (dateDayOnly > edDayOnly) return false;
+          }
+        } catch (e) {
+          // on parse error, include the class
+        }
+        return true;
+      });
+
+      if (filteredClasses.length === 0) {
         worksheetData.push(['Không có lớp học', '', '', '', '']);
       } else {
-        classes.forEach(cls => {
+        filteredClasses.forEach(cls => {
           worksheetData.push([
             cls.name,
             cls.teacher,
@@ -552,10 +672,28 @@ const exportExamsToExcel = async () => {
       return compareTimeStrings(a.time || '00:00', b.time || '00:00');
     });
 
-    if (sorted.length === 0) {
+    // Filter to only include future exams
+    const now = new Date();
+    const futureExams = sorted.filter(e => {
+      const examDate = parseDateFromDDMMYYYY(e.date);
+      if (!examDate) return false;
+      // If exam date is in the future, include it
+      const examDay = new Date(examDate.getFullYear(), examDate.getMonth(), examDate.getDate());
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      if (examDay > today) return true;
+      // If exam is today, check if time hasn't passed
+      if (examDay.getTime() === today.getTime()) {
+        const currentTimeMinutes = now.getHours() * 60 + now.getMinutes();
+        const examTimeMinutes = e.time ? parseInt(e.time.split(':')[0]) * 60 + parseInt(e.time.split(':')[1]) : 0;
+        return examTimeMinutes >= currentTimeMinutes;
+      }
+      return false;
+    });
+
+    if (futureExams.length === 0) {
       worksheetData.push(['Chưa có lịch thi', '', '', '']);
     } else {
-      sorted.forEach(e => worksheetData.push([e.subject, e.date, e.time, e.room]));
+      futureExams.forEach(e => worksheetData.push([e.subject, e.date, e.time, e.room]));
     }
 
     const ws = XLSX.utils.aoa_to_sheet(worksheetData);
@@ -1031,7 +1169,7 @@ const exportExamsToExcel = async () => {
                 onChangeText={(text) => setFormData({ ...formData, room: text })}
               />
 
-              <Text style={styles.formLabel}>Ngày trong tuần (chọn nhiều)</Text>
+              <Text style={styles.formLabel}>Ngày trong tuần</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 8 }}>
                 {DAYS.map((d, idx) => {
                   const selectedDays = (formData.days as string[]) || [];
