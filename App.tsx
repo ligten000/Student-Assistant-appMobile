@@ -37,7 +37,7 @@ interface Note {
   id: string;
   title: string;
   content: string;
-  day: string;
+  days?: string[];
   date?: string;
   reminder?: string;
   reminderId?: string;
@@ -131,6 +131,7 @@ export default function App() {
   const [scheduleData, setScheduleData] = useState<{ [key: string]: Class[] }>(SCHEDULE_DATA);
   const [exams, setExams] = useState<Exam[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
+  const [dataLoaded, setDataLoaded] = useState(false);
   const [showClassModal, setShowClassModal] = useState(false);
   const [showExamModal, setShowExamModal] = useState(false);
   const [editingClass, setEditingClass] = useState<Class | null>(null);
@@ -155,9 +156,24 @@ export default function App() {
         const no = await AsyncStorage.getItem(STORAGE_KEYS.NOTES);
         if (sd) setScheduleData(JSON.parse(sd));
         if (ex) setExams(JSON.parse(ex));
-        if (no) setNotes(JSON.parse(no));
+        if (no) {
+          try {
+            const parsed = JSON.parse(no);
+            // migrate legacy `day` -> `days` if needed
+            const migrated = (parsed || []).map((n: any) => {
+              if (n.days && Array.isArray(n.days)) return n;
+              if (n.day) return { ...n, days: [n.day], day: undefined };
+              return { ...n, days: (n.days || []) };
+            });
+            setNotes(migrated);
+          } catch (err) {
+            setNotes([]);
+          }
+        }
       } catch (e) {
         console.warn('Failed to load persisted data', e);
+      } finally {
+        setDataLoaded(true);
       }
     };
     load();
@@ -165,14 +181,19 @@ export default function App() {
 
   // Persist on changes
   useEffect(() => {
+    if (!dataLoaded) return;
     AsyncStorage.setItem(STORAGE_KEYS.SCHEDULE, JSON.stringify(scheduleData)).catch(() => {});
-  }, [scheduleData]);
+  }, [scheduleData, dataLoaded]);
+
   useEffect(() => {
+    if (!dataLoaded) return;
     AsyncStorage.setItem(STORAGE_KEYS.EXAMS, JSON.stringify(exams)).catch(() => {});
-  }, [exams]);
+  }, [exams, dataLoaded]);
+
   useEffect(() => {
+    if (!dataLoaded) return;
     AsyncStorage.setItem(STORAGE_KEYS.NOTES, JSON.stringify(notes)).catch(() => {});
-  }, [notes]);
+  }, [notes, dataLoaded]);
 
   // Reminder helpers
   const REMINDER_OFFSETS: { [key: string]: number } = {
@@ -330,7 +351,6 @@ export default function App() {
       return;
     }
 
-    const defaultDay = DAYS[selectedDayIndex];
     // Normalize date format if provided and validate
     let normalizedDate = noteFormData.date || '';
     if (normalizedDate) {
@@ -340,11 +360,10 @@ export default function App() {
       }
       normalizedDate = normalizeDateDDMMYYYY(normalizedDate);
     }
-
     if (editingNote) {
-      const updatedNotes = notes.map(n => 
-        n.id === editingNote.id 
-          ? { ...n, ...noteFormData, date: normalizedDate } as Note 
+      const updatedNotes = notes.map(n =>
+        n.id === editingNote.id
+          ? ({ ...n, ...noteFormData, date: normalizedDate, days: (noteFormData.days || []) } as Note)
           : n
       );
       setNotes(() => updatedNotes);
@@ -353,7 +372,7 @@ export default function App() {
         id: Date.now().toString(),
         title: noteFormData.title || '',
         content: noteFormData.content || '',
-        day: noteFormData.day || defaultDay,
+        days: noteFormData.days || [],
         date: normalizedDate,
         reminder: (noteFormData.reminder as string) || 'off',
       };
@@ -479,7 +498,7 @@ const exportScheduleToExcel = async () => {
       worksheetData.push(['Ghi chú', 'Nội dung', 'Ngày cụ thể']);
       const notesForDay = notes.filter(n => {
         if (n.date && n.date === dayDateStr) return true;
-        if (!n.date && n.day === day) return true;
+        if (n.days && n.days.includes(day)) return true;
         return false;
       });
       if (notesForDay.length === 0) {
@@ -675,7 +694,7 @@ const exportExamsToExcel = async () => {
               onPress={() => {
                 setShowAddChoiceModal(false);
                 setEditingNote(null);
-                setNoteFormData({ day: DAYS[selectedDayIndex] });
+                setNoteFormData({ days: [DAYS[selectedDayIndex]] });
                 setShowNoteModal(true);
               }}
             >
@@ -735,17 +754,25 @@ const exportExamsToExcel = async () => {
                 onChangeText={(text) => setNoteFormData({ ...noteFormData, date: text })}
               />
 
-              <Text style={styles.formLabel}>Ngày trong tuần</Text>
+              <Text style={styles.formLabel}>Ngày trong tuần (chọn nhiều hoặc không chọn)</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 8 }}>
-                {DAYS.map((d, idx) => (
-                  <TouchableOpacity
-                    key={d}
-                    style={[styles.dayButton, noteFormData.day === d && styles.dayButtonActive, { marginHorizontal: 6 }]}
-                    onPress={() => setNoteFormData({ ...noteFormData, day: d })}
-                  >
-                    <Text style={[styles.dayButtonText, noteFormData.day === d && styles.dayButtonTextActive]}>{DAYS_VI[idx]}</Text>
-                  </TouchableOpacity>
-                ))}
+                {DAYS.map((d, idx) => {
+                  const selectedDays = noteFormData.days || [];
+                  const active = selectedDays.includes(d);
+                  return (
+                    <TouchableOpacity
+                      key={d}
+                      style={[styles.dayButton, active && styles.dayButtonActive, { marginHorizontal: 6 }]}
+                      onPress={() => {
+                        const s = new Set(selectedDays);
+                        if (s.has(d)) s.delete(d); else s.add(d);
+                        setNoteFormData({ ...noteFormData, days: Array.from(s) });
+                      }}
+                    >
+                      <Text style={[styles.dayButtonText, active && styles.dayButtonTextActive]}>{DAYS_VI[idx]}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
               </ScrollView>
 
               <View style={styles.formButtons}>
@@ -840,9 +867,9 @@ const exportExamsToExcel = async () => {
         )}
 
         {/* Notes for the day */}
-        {notes.filter(n => n.day === DAYS[selectedDayIndex]).length > 0 && (
+        {notes.filter(n => (n.date && n.date === formatDateVN(currentDate)) || (n.days && n.days.includes(DAYS[selectedDayIndex])) ).length > 0 && (
           <View style={{ marginTop: 8 }}>
-            {notes.filter(n => n.day === DAYS[selectedDayIndex]).map(n => (
+            {notes.filter(n => (n.date && n.date === formatDateVN(currentDate)) || (n.days && n.days.includes(DAYS[selectedDayIndex])) ).map(n => (
               <View key={n.id} style={styles.noteCard}>
                 <View style={styles.noteContent}>
                   <Text style={styles.noteTitle}>{n.title}</Text>
