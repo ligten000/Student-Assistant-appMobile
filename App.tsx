@@ -17,6 +17,7 @@ interface Class {
   startTime: string;
   endTime: string;
   day: string;
+  days?: string[];
   color: string;
   notes?: string;
   reminder?: string; 
@@ -303,8 +304,8 @@ export default function App() {
       formData.endDate = normalizeDateDDMMYYYY(formData.endDate as string);
     }
 
-    const day = DAYS[selectedDayIndex];
-    
+    const day = editingClass ? editingClass.day : DAYS[selectedDayIndex];
+
     if (editingClass) {
       const prev = Object.values(scheduleData).flat().find(c => c.id === editingClass.id);
       const updated = { ...scheduleData };
@@ -319,24 +320,27 @@ export default function App() {
       updatedClass.reminder = (formData.reminder as string) || 'off';
       setScheduleData(updated);
     } else {
-      const newClass: Class = {
-        id: Date.now().toString(),
-        name: formData.name || '',
-        teacher: formData.teacher || '',
-        room: formData.room || '',
-        startTime: formData.startTime || '',
-        endTime: formData.endTime || '',
-        startDate: formData.startDate || undefined,
-        endDate: formData.endDate || undefined,
-        day: day,
-        color: formData.color || '#FF6B6B',
-        notes: formData.notes || '',
-        reminder: (formData.reminder as string) || 'off',
-      } as Class;
-
+      const selectedDays = (formData.days as string[]) || [DAYS[selectedDayIndex]];
       const updated = { ...scheduleData };
-      if (!updated[day]) updated[day] = [];
-      updated[day].push(newClass);
+      selectedDays.forEach(d => {
+        const newClass: Class = {
+          id: `${Date.now().toString()}-${d}`,
+          name: formData.name || '',
+          teacher: formData.teacher || '',
+          room: formData.room || '',
+          startTime: formData.startTime || '',
+          endTime: formData.endTime || '',
+          startDate: formData.startDate || undefined,
+          endDate: formData.endDate || undefined,
+          day: d,
+          days: selectedDays,
+          color: formData.color || '#FF6B6B',
+          notes: formData.notes || '',
+          reminder: (formData.reminder as string) || 'off',
+        } as Class;
+        if (!updated[d]) updated[d] = [];
+        updated[d].push(newClass);
+      });
       setScheduleData(updated);
     }
 
@@ -683,7 +687,7 @@ const exportExamsToExcel = async () => {
               onPress={() => {
                 setShowAddChoiceModal(false);
                 setEditingClass(null);
-                setFormData({});
+                setFormData({ days: [DAYS[selectedDayIndex]] });
                 setShowClassModal(true);
               }}
             >
@@ -824,7 +828,9 @@ const exportExamsToExcel = async () => {
                 <TouchableOpacity
                   onPress={() => {
                     setEditingClass(classItem);
-                    setFormData(classItem);
+                    // ensure formData.days is populated for editing
+                    const daysVal = (classItem as any).days && Array.isArray((classItem as any).days) ? (classItem as any).days : [classItem.day];
+                    setFormData({ ...(classItem as any), days: daysVal });
                     setShowClassModal(true);
                   }}
                 >
@@ -1024,6 +1030,27 @@ const exportExamsToExcel = async () => {
                 value={formData.room || ''}
                 onChangeText={(text) => setFormData({ ...formData, room: text })}
               />
+
+              <Text style={styles.formLabel}>Ngày trong tuần (chọn nhiều)</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 8 }}>
+                {DAYS.map((d, idx) => {
+                  const selectedDays = (formData.days as string[]) || [];
+                  const active = selectedDays.includes(d);
+                  return (
+                    <TouchableOpacity
+                      key={d}
+                      style={[styles.dayButton, active && styles.dayButtonActive, { marginHorizontal: 6 }]}
+                      onPress={() => {
+                        const s = new Set(selectedDays);
+                        if (s.has(d)) s.delete(d); else s.add(d);
+                        setFormData({ ...formData, days: Array.from(s) });
+                      }}
+                    >
+                      <Text style={[styles.dayButtonText, active && styles.dayButtonTextActive]}>{DAYS_VI[idx]}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
 
               <Text style={styles.formLabel}>Thời gian bắt đầu (HH:MM)</Text>
               <TextInput
